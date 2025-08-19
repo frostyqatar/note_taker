@@ -34,6 +34,9 @@
         .dragging {
             @apply opacity-50 scale-95;
         }
+        h3.archive-click-target {
+            cursor: pointer;
+        }
     </style>
 </head>
 <body class="h-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
@@ -59,8 +62,11 @@
                     <button id="newProjectBtn" class="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800">
                         <span>📁</span> Project
                     </button>
-                    <button id="exportBtn" class="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800">
-                        <span>📤</span> Export
+                    <button id="exportJsonBtn" class="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800" title="Export current view as JSON">
+                        <span>📄</span> JSON
+                    </button>
+                    <button id="exportTxtBtn" class="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800" title="Export current view as TXT">
+                        <span>📝</span> TXT
                     </button>
                     <button id="importBtn" class="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800">
                         <span>📥</span> Import
@@ -112,9 +118,18 @@
                             </button>
                         </div>
                     </div>
+                    
+                    <!-- Quick Notes Section -->
+                    <div id="quickNotesSection" class="hidden mb-6">
+                        <h2 class="text-lg font-semibold text-slate-700 dark:text-slate-300 mb-4">Recent Notes</h2>
+                        <div id="quickNotesContainer">
+                            <!-- Quick notes will be inserted here -->
+                        </div>
+                        <hr class="mt-6 border-slate-200 dark:border-slate-800">
+                    </div>
 
                     <!-- Cards Grid -->
-                    <div id="cardsContainer" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 mb-20">
+                    <div id="cardsContainer">
                         <!-- Cards will be inserted here -->
                     </div>
 
@@ -254,6 +269,7 @@
         }
 
         function truncateText(text, maxLength = 100) {
+            if (!text) return '';
             if (text.length <= maxLength) return text;
             return text.substr(0, maxLength) + '...';
         }
@@ -416,15 +432,15 @@
                     this.projects = await this.storage.getAll('projects');
                     this.cards = await this.storage.getAll('cards');
                     
-                    // Sort projects by sort_order
                     this.projects.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
                     
-                    // Load saved view mode and current project
                     this.viewMode = localStorage.getItem('cardforge:viewMode') || 'grid';
                     const savedProjectId = localStorage.getItem('cardforge:currentProject');
-                    if (savedProjectId && this.projects.length > 0) {
+                    
+                    if (savedProjectId === 'archived') {
+                        this.currentProject = 'archived';
+                    } else if (savedProjectId && this.projects.length > 0) {
                         this.currentProject = this.projects.find(p => p.id === savedProjectId) || this.projects[0];
-                        // Update localStorage with valid project
                         localStorage.setItem('cardforge:currentProject', this.currentProject.id);
                     } else if (this.projects.length > 0) {
                         this.currentProject = this.projects[0];
@@ -451,7 +467,6 @@
             }
 
             async createProject(data) {
-                // Check for duplicate names
                 const existingProject = this.projects.find(p => 
                     p.name.toLowerCase() === data.name.toLowerCase()
                 );
@@ -464,7 +479,6 @@
                     name: data.name,
                     emoji: data.emoji || '📁',
                     color: data.color || 'violet',
-                    archived_at: null,
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                     sort_order: this.projects.length,
@@ -473,12 +487,10 @@
 
                 await this.storage.save('projects', project);
                 this.projects.push(project);
-                // Set as current project if it's the first one
                 if (this.projects.length === 1) {
                     this.currentProject = project;
                     localStorage.setItem('cardforge:currentProject', project.id);
                 }
-                // Force a re-render to show the new project
                 setTimeout(() => this.render(), 100);
                 return project;
             }
@@ -491,8 +503,8 @@
                     content: data.content || '',
                     tags: data.tags || [],
                     pinned: data.pinned || false,
-                    checklist: data.checklist || [],
                     due_date: data.due_date || null,
+                    archived_at: null,
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                     title_lc: data.title.toLowerCase(),
@@ -522,6 +534,15 @@
                 this.render();
                 return card;
             }
+            
+            async archiveCard(id) {
+                await this.updateCard(id, { archived_at: new Date().toISOString() });
+            }
+
+            async unarchiveCard(id) {
+                await this.updateCard(id, { archived_at: null });
+            }
+
 
             async deleteCard(id) {
                 await this.storage.delete('cards', id);
@@ -530,18 +551,15 @@
             }
 
             async deleteProject(id) {
-                // Delete all cards in this project first
                 const projectCards = this.cards.filter(card => card.project_id === id);
                 for (const card of projectCards) {
                     await this.storage.delete('cards', card.id);
                 }
                 this.cards = this.cards.filter(card => card.project_id !== id);
 
-                // Delete the project
                 await this.storage.delete('projects', id);
                 this.projects = this.projects.filter(project => project.id !== id);
                 
-                // Reset current project if it was deleted
                 if (this.currentProject?.id === id) {
                     this.currentProject = null;
                 }
@@ -552,24 +570,25 @@
             getFilteredCards() {
                 let filtered = [...this.cards];
 
-                // Filter by current project
-                if (this.currentProject) {
-                    filtered = filtered.filter(card => card.project_id === this.currentProject.id);
+                if (this.currentProject === 'archived') {
+                    filtered = filtered.filter(card => card.archived_at);
+                } else {
+                    filtered = filtered.filter(card => !card.archived_at);
+                    if (this.currentProject) {
+                        filtered = filtered.filter(card => card.project_id === this.currentProject.id);
+                    }
                 }
 
-                // Filter by search query
                 if (this.searchQuery) {
                     const query = this.searchQuery.toLowerCase();
                     filtered = filtered.filter(card => 
                         card.title_lc.includes(query) ||
-                        card.content.toLowerCase().includes(query) ||
+                        (card.content && card.content.toLowerCase().includes(query)) ||
                         card.tags_flat.includes(query)
                     );
                 }
 
-                // Sort
                 filtered.sort((a, b) => {
-                    // Pinned cards always first
                     if (a.pinned && !b.pinned) return -1;
                     if (!a.pinned && b.pinned) return 1;
 
@@ -610,8 +629,8 @@
             renderProjects() {
                 const container = document.getElementById('projectsList');
                 container.innerHTML = '';
-
-                // All notes option
+                
+                const allActiveCardsCount = this.cards.filter(c => !c.archived_at).length;
                 const allItem = document.createElement('div');
                 allItem.className = `flex items-center gap-3 px-3 py-2 rounded-xl cursor-pointer transition-colors ${
                     !this.currentProject ? 'bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -619,7 +638,7 @@
                 allItem.innerHTML = `
                     <span class="text-slate-600">📝</span>
                     <span class="flex-1 font-medium">All Notes</span>
-                    <span class="text-sm text-slate-500">${this.cards.length}</span>
+                    <span class="text-sm text-slate-500">${allActiveCardsCount}</span>
                 `;
                 allItem.onclick = () => {
                     this.currentProject = null;
@@ -627,9 +646,26 @@
                     this.render();
                 };
                 container.appendChild(allItem);
+                
+                const archivedCount = this.cards.filter(c => c.archived_at).length;
+                const archiveItem = document.createElement('div');
+                archiveItem.className = `flex items-center gap-3 px-3 py-2 rounded-xl cursor-pointer transition-colors ${
+                    this.currentProject === 'archived' ? 'bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`;
+                archiveItem.innerHTML = `
+                    <span>🗑️</span>
+                    <span class="flex-1 font-medium">Archived</span>
+                    <span class="text-sm text-slate-500">${archivedCount}</span>
+                `;
+                archiveItem.onclick = () => {
+                    this.currentProject = 'archived';
+                    localStorage.setItem('cardforge:currentProject', 'archived');
+                    this.render();
+                };
+                container.appendChild(archiveItem);
 
                 this.projects.forEach(project => {
-                    const cardCount = this.cards.filter(card => card.project_id === project.id).length;
+                    const cardCount = this.cards.filter(card => card.project_id === project.id && !card.archived_at).length;
                     const item = document.createElement('div');
                     item.className = `group flex items-center gap-3 px-3 py-2 rounded-xl cursor-pointer transition-colors ${
                         this.currentProject?.id === project.id ? 'bg-slate-200 dark:bg-slate-700' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -642,33 +678,21 @@
                     `;
                     
                     item.onclick = (e) => {
-                        if (!e.target.classList.contains('delete-project')) {
+                        if (!e.target.closest('.delete-project')) {
                             this.currentProject = project;
                             localStorage.setItem('cardforge:currentProject', project.id);
                             this.render();
                         }
                     };
 
-                    // Setup drag and drop
                     item.draggable = true;
                     item.dataset.projectId = project.id;
-                    
-                    item.addEventListener('dragover', (e) => {
-                        e.preventDefault();
-                        item.classList.add('drag-over');
-                    });
-                    
-                    item.addEventListener('dragleave', () => {
-                        item.classList.remove('drag-over');
-                    });
-                    
+                    item.addEventListener('dragover', (e) => { e.preventDefault(); item.classList.add('drag-over'); });
+                    item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
                     item.addEventListener('drop', async (e) => {
-                        e.preventDefault();
-                        item.classList.remove('drag-over');
-                        
+                        e.preventDefault(); item.classList.remove('drag-over');
                         const cardId = e.dataTransfer.getData('text/plain');
                         const card = this.cards.find(c => c.id === cardId);
-                        
                         if (card && card.project_id !== project.id) {
                             await this.updateCard(cardId, { project_id: project.id });
                             showToast(`Moved "${card.title}" to ${project.name}`);
@@ -678,13 +702,11 @@
                     container.appendChild(item);
                 });
 
-                // Add delete handlers
                 container.querySelectorAll('.delete-project').forEach(btn => {
                     btn.onclick = (e) => {
                         e.stopPropagation();
                         const projectId = btn.dataset.id;
                         const project = this.projects.find(p => p.id === projectId);
-                        
                         if (confirm(`Delete "${project.name}" and all its notes?`)) {
                             this.deleteProject(projectId);
                             showToast(`Deleted project "${project.name}"`);
@@ -694,119 +716,133 @@
             }
 
             renderCards() {
-                const container = document.getElementById('cardsContainer');
+                const cardsContainer = document.getElementById('cardsContainer');
+                const quickNotesSection = document.getElementById('quickNotesSection');
+                const quickNotesContainer = document.getElementById('quickNotesContainer');
                 const emptyState = document.getElementById('emptyState');
                 const filteredCards = this.getFilteredCards();
 
+                const QUICK_NOTES_THRESHOLD = 10;
+                const QUICK_NOTES_COUNT = 3;
+
                 if (filteredCards.length === 0) {
-                    container.innerHTML = '';
+                    cardsContainer.innerHTML = '';
+                    quickNotesSection.classList.add('hidden');
                     emptyState.classList.remove('hidden');
                     return;
                 }
 
                 emptyState.classList.add('hidden');
-                container.innerHTML = '';
-
-                // Update container classes based on view mode
-                if (this.viewMode === 'list') {
-                    container.className = 'space-y-3 mb-20';
+                
+                let mainNotes = filteredCards;
+                // Show Quick Notes only in "updated_desc" sort and if not in archived view
+                if (this.sortBy === 'updated_desc' && this.currentProject !== 'archived' && filteredCards.length > QUICK_NOTES_THRESHOLD) {
+                    const quickNotes = filteredCards.slice(0, QUICK_NOTES_COUNT);
+                    mainNotes = filteredCards.slice(QUICK_NOTES_COUNT);
+                    
+                    quickNotesSection.classList.remove('hidden');
+                    this._renderCardsToDOM(quickNotes, quickNotesContainer);
                 } else {
-                    container.className = 'grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 mb-20';
+                    quickNotesSection.classList.add('hidden');
+                    quickNotesContainer.innerHTML = '';
+                }
+                
+                this._renderCardsToDOM(mainNotes, cardsContainer);
+            }
+
+            _renderCardsToDOM(cards, containerEl) {
+                containerEl.innerHTML = '';
+                containerEl.className = this.viewMode === 'list' 
+                    ? 'space-y-3' 
+                    : 'grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4';
+                
+                if (containerEl.id === 'cardsContainer') {
+                    containerEl.classList.add('mb-36');
                 }
 
-                filteredCards.forEach(card => {
+                cards.forEach(card => {
                     const project = this.projects.find(p => p.id === card.project_id);
                     const cardEl = document.createElement('div');
                     
-                    // Handle date overflow with proper truncation
+                    const isArchived = !!card.archived_at;
+                    const archivedClasses = isArchived ? 'opacity-60 hover:opacity-100' : '';
+                    const titleArchivedClasses = isArchived ? 'line-through text-slate-500' : 'archive-click-target';
+
                     const formattedDate = formatDate(card.updated_at);
                     const dateDisplay = formattedDate.length > 12 ? formattedDate.substring(0, 9) + '...' : formattedDate;
 
                     if (this.viewMode === 'list') {
-                        // List view - horizontal layout
-                        cardEl.className = 'group flex items-center gap-4 p-4 rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 hover:shadow-sm transition-all cursor-pointer';
+                        cardEl.className = `group flex items-center gap-4 p-4 rounded-xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 hover:shadow-sm transition-all cursor-pointer ${archivedClasses}`;
                         cardEl.innerHTML = `
                             <div class="flex items-center gap-2 shrink-0">
                                 ${card.pinned ? '<span class="text-amber-500">📌</span>' : ''}
                                 ${project ? `<span>${project.emoji}</span>` : ''}
                             </div>
                             <div class="flex-1 min-w-0">
-                                <div class="flex items-center gap-3">
-                                    <h3 class="font-medium text-slate-900 dark:text-slate-100 truncate">${card.title}</h3>
-                                    ${card.tags.length > 0 ? `
-                                        <div class="flex gap-1">
-                                            ${card.tags.slice(0, 2).map(tag => `<span class="rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">${tag}</span>`).join('')}
-                                            ${card.tags.length > 2 ? `<span class="text-xs text-slate-500">+${card.tags.length - 2}</span>` : ''}
-                                        </div>
-                                    ` : ''}
-                                </div>
+                                <h3 class="font-medium text-slate-900 dark:text-slate-100 truncate ${titleArchivedClasses}">${card.title}</h3>
                                 ${card.content ? `<p class="text-slate-600 dark:text-slate-400 text-sm mt-1 truncate">${truncateText(card.content, 80)}</p>` : ''}
                             </div>
                             <div class="flex items-center gap-3 shrink-0 text-xs text-slate-500">
                                 <span title="${formattedDate}">${dateDisplay}</span>
-                                ${card.due_date ? `<span class="text-orange-600 dark:text-orange-400">📅</span>` : ''}
                                 <button class="delete-card opacity-0 group-hover:opacity-100 p-1 rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-opacity" data-id="${card.id}">🗑</button>
                             </div>
                         `;
                     } else {
-                        // Grid view - original card layout
-                        cardEl.className = 'group rounded-2xl border shadow-sm hover:shadow-md transition-all bg-white dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 cursor-pointer relative';
+                        cardEl.className = `group rounded-2xl border shadow-sm hover:shadow-md transition-all bg-white dark:bg-slate-900 border-slate-200/70 dark:border-slate-800 cursor-pointer relative ${archivedClasses}`;
                         cardEl.innerHTML = `
                             <div class="p-4">
                                 <div class="flex items-start justify-between mb-2">
-                                    <h3 class="font-semibold text-slate-900 dark:text-slate-100 line-clamp-2 flex-1 pr-2">${card.title}</h3>
+                                    <h3 class="font-semibold text-slate-900 dark:text-slate-100 line-clamp-2 flex-1 pr-2 ${titleArchivedClasses}">${card.title}</h3>
                                     <div class="flex items-center gap-1 shrink-0">
                                         ${card.pinned ? '<span class="text-amber-500">📌</span>' : ''}
                                         <button class="delete-card opacity-0 group-hover:opacity-100 p-1 rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-opacity" data-id="${card.id}">🗑</button>
                                     </div>
                                 </div>
                                 ${card.content ? `<p class="text-slate-600 dark:text-slate-400 text-sm mb-3 line-clamp-3">${truncateText(card.content)}</p>` : ''}
-                                ${card.tags.length > 0 ? `
-                                    <div class="flex flex-wrap gap-1 mb-3">
-                                        ${card.tags.slice(0, 3).map(tag => `<span class="rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">${tag}</span>`).join('')}
-                                        ${card.tags.length > 3 ? `<span class="text-xs text-slate-500">+${card.tags.length - 3}</span>` : ''}
-                                    </div>
-                                ` : ''}
-                                <div class="flex items-center justify-between">
-                                    <div class="flex items-center gap-2 text-xs text-slate-500 min-w-0">
-                                        ${project ? `<span class="shrink-0">${project.emoji}</span>` : ''}
-                                        <span class="truncate max-w-[60px]" title="${formattedDate}">${dateDisplay}</span>
-                                    </div>
-                                    ${card.due_date ? `<span class="text-xs text-orange-600 dark:text-orange-400 shrink-0">📅 ${formatDate(card.due_date).substring(0,8)}</span>` : ''}
+                                <div class="flex items-center justify-between text-xs text-slate-500">
+                                    ${project ? `<span class="shrink-0">${project.emoji}</span>` : ''}
+                                    <span class="truncate" title="${formattedDate}">${dateDisplay}</span>
                                 </div>
                             </div>
                         `;
                     }
-
+                    
                     cardEl.draggable = true;
                     cardEl.dataset.cardId = card.id;
+                    cardEl.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', card.id); cardEl.classList.add('dragging'); });
+                    cardEl.addEventListener('dragend', () => cardEl.classList.remove('dragging'));
+                    
+                    containerEl.appendChild(cardEl);
 
-                    cardEl.onclick = (e) => {
-                        if (!e.target.classList.contains('delete-card')) {
-                            this.editCard(card);
+                    const titleEl = cardEl.querySelector('h3');
+                    if (isArchived) {
+                        cardEl.onclick = (e) => {
+                            if (!e.target.closest('.delete-card')) {
+                                this.unarchiveCard(card.id);
+                                showToast(`Restored "${card.title}"`);
+                            }
+                        };
+                    } else {
+                        cardEl.onclick = (e) => {
+                            if (!e.target.closest('.delete-card') && !e.target.closest('h3')) {
+                                this.editCard(card);
+                            }
+                        };
+                        if (titleEl) {
+                            titleEl.onclick = (e) => {
+                                e.stopPropagation();
+                                this.archiveCard(card.id);
+                                showToast(`Archived "${card.title}"`);
+                            };
                         }
-                    };
-
-                    // Drag functionality
-                    cardEl.addEventListener('dragstart', (e) => {
-                        e.dataTransfer.setData('text/plain', card.id);
-                        cardEl.classList.add('dragging');
-                    });
-
-                    cardEl.addEventListener('dragend', () => {
-                        cardEl.classList.remove('dragging');
-                    });
-
-                    container.appendChild(cardEl);
+                    }
                 });
 
-                // Add delete handlers
-                container.querySelectorAll('.delete-card').forEach(btn => {
+                containerEl.querySelectorAll('.delete-card').forEach(btn => {
                     btn.onclick = (e) => {
                         e.stopPropagation();
                         const cardId = btn.dataset.id;
                         const card = this.cards.find(c => c.id === cardId);
-                        
                         if (confirm(`Delete "${card.title}"?`)) {
                             this.deleteCard(cardId);
                             showToast(`Deleted note "${card.title}"`);
@@ -817,11 +853,11 @@
 
             renderProjectChip() {
                 const chip = document.getElementById('projectChip');
-                if (this.currentProject) {
-                    chip.innerHTML = `
-                        <span class="mr-1">${this.currentProject.emoji}</span>
-                        <span>${this.currentProject.name}</span>
-                    `;
+                if (this.currentProject === 'archived') {
+                    chip.innerHTML = `<span class="mr-1">🗑️</span><span>Archived</span>`;
+                    chip.classList.remove('hidden');
+                } else if (this.currentProject) {
+                    chip.innerHTML = `<span class="mr-1">${this.currentProject.emoji}</span><span>${this.currentProject.name}</span>`;
                     chip.classList.remove('hidden');
                 } else {
                     chip.classList.add('hidden');
@@ -838,127 +874,6 @@
                 document.getElementById('modalTitle').textContent = 'Edit Note';
                 document.getElementById('noteModal').classList.remove('hidden');
             }
-
-            async exportData() {
-                if (this.currentProject) {
-                    // Show export options for specific project
-                    this.showProjectExportOptions();
-                } else {
-                    // Export all data
-                    const exportData = {
-                        meta: {
-                            exported_at: new Date().toISOString(),
-                            app_version: '1.0.0'
-                        },
-                        projects: this.projects,
-                        cards: this.cards
-                    };
-
-                    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `cardforge-export-${new Date().toISOString().split('T')[0]}.json`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    
-                    showToast('Data exported successfully');
-                }
-            }
-
-            showProjectExportOptions() {
-                const projectName = this.currentProject.name.toLowerCase().replace(/\s+/g, '-');
-                const projectCards = this.cards.filter(card => card.project_id === this.currentProject.id);
-                
-                // Create export menu
-                const menu = document.createElement('div');
-                menu.className = 'fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4';
-                menu.innerHTML = `
-                    <div class="bg-white dark:bg-slate-900 rounded-2xl p-6 w-full max-w-sm animate-slide-up">
-                        <h3 class="text-lg font-semibold mb-4">Export "${this.currentProject.name}"</h3>
-                        <div class="space-y-3">
-                            <button id="exportJson" class="w-full text-left px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800">
-                                <div class="font-medium">📄 JSON Format</div>
-                                <div class="text-sm text-slate-500">Export as structured data</div>
-                            </button>
-                            <button id="exportText" class="w-full text-left px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800">
-                                <div class="font-medium">📝 Text Format</div>
-                                <div class="text-sm text-slate-500">Export as readable text</div>
-                            </button>
-                        </div>
-                        <button id="closeExportMenu" class="mt-4 w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800">Cancel</button>
-                    </div>
-                `;
-                
-                document.body.appendChild(menu);
-                
-                menu.querySelector('#exportJson').onclick = () => {
-                    const exportData = {
-                        meta: {
-                            exported_at: new Date().toISOString(),
-                            app_version: '1.0.0',
-                            project: this.currentProject.name
-                        },
-                        project: this.currentProject,
-                        cards: projectCards
-                    };
-                    
-                    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${projectName}-notes-${new Date().toISOString().split('T')[0]}.json`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    
-                    menu.remove();
-                    showToast(`Exported ${projectCards.length} notes as JSON`);
-                };
-                
-                menu.querySelector('#exportText').onclick = () => {
-                    let textContent = `${this.currentProject.name} - Notes Export\n`;
-                    textContent += `Generated on ${new Date().toLocaleDateString()}\n`;
-                    textContent += `Total Notes: ${projectCards.length}\n\n`;
-                    textContent += '='.repeat(50) + '\n\n';
-                    
-                    projectCards
-                        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
-                        .forEach((card, index) => {
-                            textContent += `${index + 1}. ${card.title}\n`;
-                            if (card.content) {
-                                textContent += `${card.content}\n`;
-                            }
-                            if (card.tags.length > 0) {
-                                textContent += `Tags: ${card.tags.join(', ')}\n`;
-                            }
-                            textContent += `Created: ${new Date(card.created_at).toLocaleDateString()}\n`;
-                            textContent += `Updated: ${new Date(card.updated_at).toLocaleDateString()}\n`;
-                            textContent += '\n' + '-'.repeat(30) + '\n\n';
-                        });
-                    
-                    const blob = new Blob([textContent], { type: 'text/plain' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `${projectName}-notes-${new Date().toISOString().split('T')[0]}.txt`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    
-                    menu.remove();
-                    showToast(`Exported ${projectCards.length} notes as text`);
-                };
-                
-                menu.querySelector('#closeExportMenu').onclick = () => menu.remove();
-                menu.onclick = (e) => {
-                    if (e.target === menu) menu.remove();
-                };
-            }
         }
 
         // Initialize the app
@@ -966,7 +881,7 @@
 
         // Event Listeners
         document.getElementById('themeToggle').onclick = () => {
-            const newTheme = app.theme === 'dark' ? 'light' : 'dark';
+            const newTheme = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
             app.setTheme(newTheme);
         };
 
@@ -986,10 +901,52 @@
             app.render();
         };
 
-        document.getElementById('importBtn').onclick = () => {
-            document.getElementById('importFile').click();
+        document.getElementById('exportJsonBtn').onclick = () => {
+            const project = app.currentProject;
+            const notes = app.getFilteredCards();
+            const projectName = project && project !== 'archived' ? project.name : (project === 'archived' ? 'Archived' : 'All-Notes');
+            const filename = `${projectName.toLowerCase().replace(/\s+/g, '-')}-export-${new Date().toISOString().split('T')[0]}.json`;
+
+            const exportData = {
+                meta: { exported_at: new Date().toISOString(), view: projectName },
+                project: (project && project !== 'archived') ? project : null,
+                cards: notes
+            };
+            
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast(`Exported ${notes.length} notes as JSON`);
         };
 
+        document.getElementById('exportTxtBtn').onclick = () => {
+            const project = app.currentProject;
+            const notes = app.getFilteredCards();
+            const projectName = project && project !== 'archived' ? project.name : (project === 'archived' ? 'Archived' : 'All-Notes');
+            const filename = `${projectName.toLowerCase().replace(/\s+/g, '-')}-export-${new Date().toISOString().split('T')[0]}.txt`;
+
+            let textContent = `${projectName} - Notes Export\nGenerated on ${new Date().toLocaleDateString()}\nTotal Notes: ${notes.length}\n\n==================================================\n\n`;
+            
+            notes.forEach((card, index) => {
+                textContent += `${index + 1}. ${card.title}\n`;
+                if (card.content) textContent += `${card.content}\n`;
+                if (card.tags && card.tags.length > 0) textContent += `Tags: ${card.tags.join(', ')}\n`;
+                textContent += `Updated: ${new Date(card.updated_at).toLocaleDateString()}\n\n------------------------------\n\n`;
+            });
+            
+            const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast(`Exported ${notes.length} notes as text`);
+        };
+
+        document.getElementById('importBtn').onclick = () => document.getElementById('importFile').click();
+        
+        // CORRECTED: The entire import logic is replaced here
         document.getElementById('importFile').onchange = async (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -999,52 +956,65 @@
                 const data = JSON.parse(text);
                 
                 if (!data.projects || !data.cards) {
-                    throw new Error('Invalid file format');
+                    throw new Error('Invalid file format: missing projects or cards array.');
                 }
 
-                // Import projects
                 let importedProjects = 0;
                 let importedCards = 0;
-                
+                const idMap = new Map();
+
+                // First pass: Import projects and create an ID map.
                 for (const project of data.projects) {
-                    const existingProject = app.projects.find(p => 
-                        p.name.toLowerCase() === project.name.toLowerCase()
-                    );
+                    const existingProject = app.projects.find(p => p.name.toLowerCase() === project.name.toLowerCase());
                     
-                    if (!existingProject) {
+                    if (existingProject) {
+                        // If project with same name exists, map old ID to existing ID
+                        idMap.set(project.id, existingProject.id);
+                    } else {
+                        // Otherwise, create a new project and map old ID to the new one
+                        const newId = generateId();
+                        idMap.set(project.id, newId);
+
                         const newProject = {
                             ...project,
-                            id: generateId(),
+                            id: newId, // Assign the new, unique ID
                             sort_order: app.projects.length
                         };
+                        
                         await app.storage.save('projects', newProject);
                         app.projects.push(newProject);
                         importedProjects++;
-                        
-                        // Import cards for this project
-                        const projectCards = data.cards.filter(card => card.project_id === project.id);
-                        for (const card of projectCards) {
-                            const newCard = {
-                                ...card,
-                                id: generateId(),
-                                project_id: newProject.id
-                            };
-                            await app.storage.save('cards', newCard);
-                            app.cards.push(newCard);
-                            importedCards++;
-                        }
+                    }
+                }
+
+                // Second pass: Import cards using the ID map to link them correctly.
+                for (const card of data.cards) {
+                    const newProjectId = idMap.get(card.project_id);
+                    
+                    if (newProjectId) {
+                        const newCard = {
+                            ...card,
+                            id: generateId(), // Always generate a new ID for the card
+                            project_id: newProjectId // Use the mapped project ID
+                        };
+                        await app.storage.save('cards', newCard);
+                        app.cards.push(newCard);
+                        importedCards++;
+                    } else {
+                        console.warn(`Skipping card "${card.title}" because its project could not be found or mapped.`);
                     }
                 }
                 
                 app.render();
-                showToast(`Imported ${importedProjects} projects and ${importedCards} notes`);
+                showToast(`Imported ${importedProjects} new projects and ${importedCards} notes`);
             } catch (error) {
                 console.error('Import failed:', error);
-                showToast('Import failed - invalid file format', 'error');
+                showToast(`Import failed: ${error.message}`, 'error');
             }
             
             e.target.value = ''; // Reset file input
         };
+
 
         document.getElementById('newCardBtn').onclick = () => {
             app.currentCard = null;
@@ -1057,8 +1027,7 @@
             document.getElementById('noteModal').classList.remove('hidden');
         };
 
-        document.getElementById('newProjectBtn').onclick = 
-        document.getElementById('addProjectBtn').onclick = () => {
+        document.getElementById('newProjectBtn').onclick = document.getElementById('addProjectBtn').onclick = () => {
             document.getElementById('projectName').value = '';
             document.getElementById('projectEmoji').value = '📁';
             document.getElementById('projectColor').value = 'violet';
@@ -1066,13 +1035,7 @@
             document.getElementById('projectModal').classList.remove('hidden');
         };
 
-        document.getElementById('exportBtn').onclick = () => {
-            app.exportData();
-        };
-
-        document.getElementById('emptyStateBtn').onclick = () => {
-            document.getElementById('newCardBtn').click();
-        };
+        document.getElementById('emptyStateBtn').onclick = () => document.getElementById('newCardBtn').click();
 
         // Quick add functionality
         const quickAddTitle = document.getElementById('quickAddTitle');
@@ -1080,80 +1043,41 @@
         const quickAddBtn = document.getElementById('quickAddBtn');
 
         async function handleQuickAdd() {
-            const title = quickAddTitle.value.trim();
+            const title = quickAddTitle.value.trim(); if (!title) return;
             const content = quickAddContent.value.trim();
-            if (!title) return;
-
-            await app.createCard({
-                title,
-                content,
-                project_id: app.currentProject?.id || app.projects[0]?.id
-            });
-            
-            quickAddTitle.value = '';
-            quickAddContent.value = '';
+            const projectId = app.currentProject && app.currentProject !== 'archived' ? app.currentProject.id : app.projects[0]?.id;
+            await app.createCard({ title, content, project_id: projectId });
+            quickAddTitle.value = ''; quickAddContent.value = '';
             showToast(`Created "${title}"`);
         }
 
         quickAddBtn.onclick = handleQuickAdd;
-        quickAddTitle.onkeydown = (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleQuickAdd();
-            }
-        };
-        quickAddContent.onkeydown = (e) => {
-            if (e.key === 'Enter' && e.ctrlKey) {
-                e.preventDefault();
-                handleQuickAdd();
-            }
-        };
+        quickAddTitle.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleQuickAdd(); } };
 
         // Modal event listeners
-        document.getElementById('closeModal').onclick = 
-        document.getElementById('cancelEdit').onclick = () => {
-            document.getElementById('noteModal').classList.add('hidden');
-        };
-
-        document.getElementById('closeProjectModal').onclick = 
-        document.getElementById('cancelProject').onclick = () => {
-            document.getElementById('projectModal').classList.add('hidden');
-        };
+        document.getElementById('closeModal').onclick = document.getElementById('cancelEdit').onclick = () => document.getElementById('noteModal').classList.add('hidden');
+        document.getElementById('closeProjectModal').onclick = document.getElementById('cancelProject').onclick = () => document.getElementById('projectModal').classList.add('hidden');
 
         document.getElementById('saveNote').onclick = async () => {
-            const title = document.getElementById('noteTitle').value.trim();
+            const title = document.getElementById('noteTitle').value.trim(); if (!title) { alert('Please enter a title'); return; }
             const content = document.getElementById('noteContent').value;
-            const tags = document.getElementById('noteTags').value
-                .split(',')
-                .map(tag => tag.trim())
-                .filter(tag => tag);
+            const tags = document.getElementById('noteTags').value.split(',').map(t => t.trim()).filter(Boolean);
             const dueDate = document.getElementById('noteDueDate').value || null;
             const pinned = document.getElementById('notePinned').checked;
 
-            if (!title) {
-                alert('Please enter a title');
-                return;
-            }
-
             if (app.currentCard) {
-                await app.updateCard(app.currentCard.id, {
-                    title, content, tags, due_date: dueDate, pinned
-                });
+                await app.updateCard(app.currentCard.id, { title, content, tags, due_date: dueDate, pinned });
                 showToast(`Updated "${title}"`);
             } else {
-                await app.createCard({
-                    title, content, tags, due_date: dueDate, pinned,
-                    project_id: app.currentProject?.id || app.projects[0]?.id
-                });
+                const projectId = app.currentProject && app.currentProject !== 'archived' ? app.currentProject.id : app.projects[0]?.id;
+                await app.createCard({ title, content, tags, due_date: dueDate, pinned, project_id: projectId });
                 showToast(`Created "${title}"`);
             }
-
             document.getElementById('noteModal').classList.add('hidden');
         };
 
         document.getElementById('deleteNote').onclick = async () => {
             if (!app.currentCard) return;
-            
             if (confirm(`Delete "${app.currentCard.title}"?`)) {
                 await app.deleteCard(app.currentCard.id);
                 document.getElementById('noteModal').classList.add('hidden');
@@ -1162,61 +1086,17 @@
         };
 
         document.getElementById('saveProject').onclick = async () => {
-            const name = document.getElementById('projectName').value.trim();
+            const name = document.getElementById('projectName').value.trim(); if (!name) { alert('Please enter a project name'); return; }
             const emoji = document.getElementById('projectEmoji').value || '📁';
             const color = document.getElementById('projectColor').value;
-
-            if (!name) {
-                alert('Please enter a project name');
-                return;
-            }
-
             await app.createProject({ name, emoji, color });
             document.getElementById('projectModal').classList.add('hidden');
             showToast(`Created project "${name}"`);
         };
 
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => {
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
-            switch (e.key.toLowerCase()) {
-                case 'n':
-                    if (e.shiftKey) {
-                        document.getElementById('newProjectBtn').click();
-                    } else {
-                        document.getElementById('newCardBtn').click();
-                    }
-                    e.preventDefault();
-                    break;
-                case '/':
-                    document.getElementById('globalSearch').focus();
-                    e.preventDefault();
-                    break;
-                case 't':
-                    document.getElementById('themeToggle').click();
-                    e.preventDefault();
-                    break;
-                case 'escape':
-                    document.querySelectorAll('.modal:not(.hidden)').forEach(modal => {
-                        modal.classList.add('hidden');
-                    });
-                    break;
-            }
-        });
-
         // Close modals when clicking outside
-        document.getElementById('noteModal').onclick = (e) => {
-            if (e.target === e.currentTarget) {
-                document.getElementById('noteModal').classList.add('hidden');
-            }
-        };
-
-        document.getElementById('projectModal').onclick = (e) => {
-            if (e.target === e.currentTarget) {
-                document.getElementById('projectModal').classList.add('hidden');
-            }
-        };
+        document.getElementById('noteModal').onclick = (e) => { if (e.target === e.currentTarget) e.target.classList.add('hidden'); };
+        document.getElementById('projectModal').onclick = (e) => { if (e.target === e.currentTarget) e.target.classList.add('hidden'); };
 
         console.log('CardForge Notes initialized successfully');
     </script>
