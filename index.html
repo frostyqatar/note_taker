@@ -781,6 +781,7 @@
                             <div class="flex-1 min-w-0">
                                 <h3 class="font-medium text-slate-900 dark:text-slate-100 truncate ${titleArchivedClasses}">${card.title}</h3>
                                 ${card.content ? `<p class="text-slate-600 dark:text-slate-400 text-sm mt-1 truncate">${truncateText(card.content, 80)}</p>` : ''}
+                                ${card.tags && card.tags.length ? `<div class="mt-1 flex flex-wrap gap-1">${card.tags.map(tag => `<span class=\"px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-xs\">${tag}</span>`).join('')}</div>` : ''}
                             </div>
                             <div class="flex items-center gap-3 shrink-0 text-xs text-slate-500">
                                 <span title="${formattedDate}">${dateDisplay}</span>
@@ -799,6 +800,7 @@
                                     </div>
                                 </div>
                                 ${card.content ? `<p class="text-slate-600 dark:text-slate-400 text-sm mb-3 line-clamp-3">${truncateText(card.content)}</p>` : ''}
+                                ${card.tags && card.tags.length ? `<div class="mb-3 flex flex-wrap gap-1">${card.tags.map(tag => `<span class=\"px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-xs\">${tag}</span>`).join('')}</div>` : ''}
                                 <div class="flex items-center justify-between text-xs text-slate-500">
                                     ${project ? `<span class="shrink-0">${project.emoji}</span>` : ''}
                                     <span class="truncate" title="${formattedDate}">${dateDisplay}</span>
@@ -879,6 +881,48 @@
         // Initialize the app
         const app = new AppState();
 
+        function exportDataAsJson(notes, project, projectName, filename) {
+            const exportData = {
+                meta: { exported_at: new Date().toISOString(), view: projectName },
+                project: project,
+                cards: notes
+            };
+
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast(`Exported ${notes.length} notes as JSON`);
+        }
+
+        function exportCurrentViewAsJson() {
+            const project = app.currentProject;
+            const notes = app.getFilteredCards();
+            const projectName = project && project !== 'archived' ? project.name : (project === 'archived' ? 'Archived' : 'All Notes');
+            const filename = `${projectName.toLowerCase().replace(/\s+/g, '-')}-export-${new Date().toISOString().split('T')[0]}.json`;
+            exportDataAsJson(notes, (project && project !== 'archived') ? project : null, projectName, filename);
+        }
+
+        function scheduleDailyBackup() {
+            function msUntilNextBackup() {
+                const now = new Date();
+                const next = new Date();
+                next.setHours(18, 0, 0, 0);
+                if (next <= now) next.setDate(next.getDate() + 1);
+                return next - now;
+            }
+            function backup() {
+                const notes = app.cards;
+                const filename = `auto-backup-${new Date().toISOString().split('T')[0]}.json`;
+                exportDataAsJson(notes, null, 'All Notes', filename);
+            }
+            setTimeout(() => {
+                backup();
+                setInterval(backup, 24 * 60 * 60 * 1000);
+            }, msUntilNextBackup());
+        }
+
         // Event Listeners
         document.getElementById('themeToggle').onclick = () => {
             const newTheme = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
@@ -901,25 +945,7 @@
             app.render();
         };
 
-        document.getElementById('exportJsonBtn').onclick = () => {
-            const project = app.currentProject;
-            const notes = app.getFilteredCards();
-            const projectName = project && project !== 'archived' ? project.name : (project === 'archived' ? 'Archived' : 'All-Notes');
-            const filename = `${projectName.toLowerCase().replace(/\s+/g, '-')}-export-${new Date().toISOString().split('T')[0]}.json`;
-
-            const exportData = {
-                meta: { exported_at: new Date().toISOString(), view: projectName },
-                project: (project && project !== 'archived') ? project : null,
-                cards: notes
-            };
-            
-            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a'); a.href = url; a.download = filename;
-            document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            showToast(`Exported ${notes.length} notes as JSON`);
-        };
+        document.getElementById('exportJsonBtn').onclick = exportCurrentViewAsJson;
 
         document.getElementById('exportTxtBtn').onclick = () => {
             const project = app.currentProject;
@@ -1098,6 +1124,7 @@
         document.getElementById('noteModal').onclick = (e) => { if (e.target === e.currentTarget) e.target.classList.add('hidden'); };
         document.getElementById('projectModal').onclick = (e) => { if (e.target === e.currentTarget) e.target.classList.add('hidden'); };
 
+        scheduleDailyBackup();
         console.log('CardForge Notes initialized successfully');
     </script>
 </body>
